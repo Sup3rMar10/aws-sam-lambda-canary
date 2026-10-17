@@ -1,0 +1,4 @@
+# W3005 (obsolete DependsOn) fires on resources the SAM transform itself generates (the usage plan's DependsOn on
+# the API stage), not on anything written in template.yaml, and cannot be fixed from here.
+ignore_checks:
+  - W3005
