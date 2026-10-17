@@ -4,7 +4,7 @@
 
 A serverless orders API (API Gateway, Lambda, DynamoDB) deployed with AWS SAM, built around **safe deployments**: prod shifts 10% of traffic to the new version first, a **pre-traffic hook** smoke-tests the new code before it gets any, and a CloudWatch **errors alarm rolls the deployment back** automatically. The business code is small on purpose; the delivery is the point.
 
-> **What is verified, and what is not.** 46 tests pass locally on Python 3.13 against **moto**, an in-memory emulation of DynamoDB (no AWS account, dummy credentials), and `cfn-lint` passes on the SAM template. **Nothing here has ever been deployed to AWS**: the canary, the hook running under CodeDeploy and the alarm rollback are configured and unit-tested but have never executed. Emulation is not AWS (see limits). The deploy workflow's jobs are skipped unless you set `AWS_DEPLOY_ROLE_ARN`.
+> **What is verified, and what is not.** 46 tests pass locally on Python 3.13 against **moto**, an in-memory emulation of DynamoDB (no AWS account, dummy credentials), and `cfn-lint` passes on the SAM template. In GitHub Actions the tests also pass on Python 3.11 and 3.13, `sam validate --lint` and `sam build` pass, and `sam local invoke` ran the **built** function inside the Lambda runtime image (arm64, emulated): `/health` returned 200 and an invalid order returned 400 (2026-10-17). **Nothing here has ever been deployed to AWS**: the canary, the hook running under CodeDeploy and the alarm rollback are configured and unit-tested but have never executed. Emulation is not AWS (see limits). The deploy workflow's jobs are skipped unless you set `AWS_DEPLOY_ROLE_ARN`.
 
 ## What is in it
 
