@@ -1,0 +1,6 @@
+{
+  "httpMethod": "POST",
+  "resource": "/orders",
+  "headers": {},
+  "body": "{\"items\": []}"
+}

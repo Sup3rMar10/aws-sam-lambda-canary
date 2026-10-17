@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install pytest moto boto3 pyyaml
+      - run: python -m pytest
+
+  template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - run: python -m pip install cfn-lint
+      - run: cfn-lint template.yaml
+      - run: sam validate --lint
+      - name: Build the packaged functions
+        run: sam build
+      - name: Lint the workflows
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  local-invoke:
+    # Run the BUILT function inside the real Lambda runtime image (emulated arm64), with no AWS account.
+    # The two events below never touch DynamoDB, so they need no database.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - run: sam build
+      - name: Health route answers 200
+        run: |
+          sam local invoke OrdersFunction --event events/health.json > health.json
+          cat health.json
+          grep -q '"statusCode": 200' health.json
+      - name: An invalid order is rejected with 400
+        run: |
+          sam local invoke OrdersFunction --event events/invalid-order.json > invalid.json
+          cat invalid.json
+          grep -q '"statusCode": 400' invalid.json

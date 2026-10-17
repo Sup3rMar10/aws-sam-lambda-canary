@@ -1,0 +1,62 @@
+name: deploy
+
+# Reference pipeline, NEVER RUN against a real AWS account. Both jobs are skipped unless the repository
+# variable AWS_DEPLOY_ROLE_ARN is set (see the aws-oidc-github-deploy repository for the keyless role setup).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  dev:
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: sam build
+      - name: Deploy dev (all at once)
+        run: >
+          sam deploy --stack-name orders-dev --resolve-s3 --capabilities CAPABILITY_IAM
+          --parameter-overrides Stage=dev --no-confirm-changeset --no-fail-on-empty-changeset
+
+  prod:
+    # Waits for dev, then needs the reviewers configured on the prod environment. CodeDeploy then shifts
+    # 10 percent of traffic, runs the pre-traffic hook, watches the errors alarm, and rolls back on a breach.
+    needs: dev
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: sam build
+      - name: Deploy prod (canary)
+        run: >
+          sam deploy --stack-name orders-prod --resolve-s3 --capabilities CAPABILITY_IAM
+          --parameter-overrides Stage=prod --no-confirm-changeset --no-fail-on-empty-changeset

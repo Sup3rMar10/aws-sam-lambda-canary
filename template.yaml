@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: "Orders API with safe deployments: prod shifts 10 percent of traffic first and rolls back on errors."
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [arm64]
+    Timeout: 10
+    MemorySize: 256
+    Tracing: Active
+
+Resources:
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: order_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: order_id
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  OrdersApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      TracingEnabled: true
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          Throttle:
+            RateLimit: 50
+            BurstLimit: 100
+
+  OrdersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref OrdersTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+      Events:
+        CreateOrder:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersApi
+            Path: /orders
+            Method: post
+        GetOrder:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersApi
+            Path: /orders/{id}
+            Method: get
+        Health:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersApi
+            Path: /health
+            Method: get
+      DeploymentPreference:
+        # dev replaces the code at once; prod sends 10 percent of traffic to the new version for 5 minutes first.
+        Type: !If [IsProd, Canary10Percent5Minutes, AllAtOnce]
+        Alarms:
+          - !Ref OrdersErrorsAlarm
+        Hooks:
+          PreTraffic: !Ref PreTrafficFunction
+
+  # CodeDeploy rolls the deployment back if this alarm fires while traffic is shifting.
+  OrdersErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Errors on the live alias while a deployment is shifting traffic
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref OrdersFunction
+        - Name: Resource
+          Value: !Sub "${OrdersFunction}:live"
+
+  # The function name must start with CodeDeployHook_ for CodeDeploy to be allowed to invoke it.
+  PreTrafficFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "CodeDeployHook_${AWS::StackName}_pre_traffic"
+      CodeUri: hooks/
+      Handler: pre_traffic.handler
+      DeploymentPreference:
+        Enabled: false
+      Environment:
+        Variables:
+          NEW_VERSION: !Ref OrdersFunction.Version
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: codedeploy:PutLifecycleEventHookExecutionStatus
+              Resource: !Sub "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${ServerlessDeploymentApplication}/*"
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Ref OrdersFunction.Version
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${OrdersApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+  TableName:
+    Value: !Ref OrdersTable
